@@ -1,0 +1,11 @@
+# Mooncake 内部架构 Wiki 的构建依赖
+#
+# 用法（在 develop/wiki/ 目录下）：
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-docs.txt
+#   mkdocs serve -f mkdocs.yml
+#   # 浏览器打开 http://127.0.0.1:8000
+#   # 或构建静态站点：
+#   mkdocs build -f mkdocs.yml -d site
+mkdocs>=1.6.0
+mkdocs-material>=9.5.0

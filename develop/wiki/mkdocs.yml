@@ -1,0 +1,111 @@
+site_name: Mooncake 内部架构 Wiki
+site_description: Mooncake 源码与架构内部知识库（中文为主，面向源码贡献者与架构研究者）
+site_url: https://kvcache-ai.github.io/Mooncake/
+repo_url: https://github.com/kvcache-ai/Mooncake
+repo_name: kvcache-ai/Mooncake
+edit_uri: edit/main/develop/wiki/
+docs_dir: .
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.select
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inline_highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - attr_list
+  - md_in_html
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+    absolute_links: info
+  links:
+    not_found: warn
+    absolute_links: info
+    unrecognized_links: info
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kvcache-ai/Mooncake
+
+nav:
+  - 首页: README.md
+  - 总览:
+      - 架构拓扑: 00-overview/architecture.md
+      - 依赖与交叉引用: 00-overview/dependency-graph.md
+      - 硬件协议矩阵: 00-overview/hardware-protocol-matrix.md
+      - 术语表: 00-overview/glossary.md
+  - 基础公共层: 01-common/index.md
+  - 传输引擎:
+      - 引擎核心: 02-transfer-engine/index.md
+      - 传输后端族: 02-transfer-engine/transports.md
+      - 内存分配器: 02-transfer-engine/allocators.md
+      - TENT 下一代: 02-transfer-engine/tent.md
+  - 存储引擎:
+      - 总览: 03-store/index.md
+      - 元数据与 HA: 03-store/metadata-ha.md
+      - 多级存储后端: 03-store/storage-backends.md
+      - 复制与调度: 03-store/replication-scheduling.md
+      - 缓存与驱逐: 03-store/cache-eviction.md
+      - Engram 与 Conductor: 03-store/engram-conductor.md
+      - KV 事件与序列化: 03-store/kv-event-serialize.md
+      - Go/Rust 绑定: 03-store/bindings.md
+  - P2P 存储: 04-p2p-store/index.md
+  - 专家并行: 05-ep/index.md
+  - 进程组: 06-pg/index.md
+  - RL 示例: 07-rl/index.md
+  - Python 绑定层: 08-integration/index.md
+  - 打包分发: 09-wheel/index.md
+  - 横向支撑: 10-cross-cutting/index.md
+  - 外部生态: 11-ecosystem/index.md
+  - 附录: 12-appendix/index.md

@@ -1,0 +1,5 @@
+# mkdocs 构建产物
+site/
+# 本地虚拟环境
+.venv/
+__pycache__/
