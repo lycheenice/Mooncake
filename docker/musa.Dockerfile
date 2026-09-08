@@ -25,7 +25,6 @@ ARG PYPI_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 ARG EP_TORCH_VERSIONS=""
 
 ENV PYTHON_VERSION=${PYTHON_VERSION} \
-    BUILD_WITH_EP=1 \
     EP_TORCH_VERSIONS=${EP_TORCH_VERSIONS} \
     PIP_INDEX_URL=${PYPI_INDEX_URL} \
     PATH="/usr/local/go/bin:${PATH}"
@@ -33,7 +32,7 @@ ENV PYTHON_VERSION=${PYTHON_VERSION} \
 WORKDIR /workspace
 COPY . /workspace
 
-# Install Mooncake dependencies (submodules, yalantinglibs, Go, etc.)
+# Install Mooncake dependencies (submodules, Go, etc.)
 RUN bash dependencies.sh -y
 
 # Configure & build Mooncake

@@ -5,10 +5,38 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 
 namespace mooncake::test {
+
+namespace {
+
+std::optional<int64_t> FindSerializedMetricValue(
+    const std::string& metrics, const std::string& metric_name) {
+    std::istringstream lines(metrics);
+    std::string line;
+    const std::string prefix = metric_name + " ";
+    while (std::getline(lines, line)) {
+        if (line.rfind(prefix, 0) != 0) {
+            continue;
+        }
+
+        std::istringstream value_stream(line.substr(prefix.size()));
+        int64_t value = 0;
+        if (!(value_stream >> value)) {
+            return std::nullopt;
+        }
+        value_stream >> std::ws;
+        return value_stream.eof() ? std::optional<int64_t>(value)
+                                  : std::nullopt;
+    }
+    return std::nullopt;
+}
+
+}  // namespace
 
 class HAMetricManagerTest : public ::testing::Test {
    protected:
@@ -95,17 +123,100 @@ TEST_F(HAMetricManagerTest, TestIncWatchDisconnectionsAndAppliedEntries) {
 }
 
 TEST_F(HAMetricManagerTest, TestRecordOpLogEtcdWriteLatency) {
-    // Call histogram observe functions, mainly to ensure they do not crash
+    const std::string count_name = "ha_oplog_etcd_write_latency_us_count";
+    const std::string sum_name = "ha_oplog_etcd_write_latency_us_sum";
+    const std::string before_metrics = M().serialize_metrics();
+    const int64_t count_before =
+        FindSerializedMetricValue(before_metrics, count_name).value_or(0);
+    const int64_t sum_before =
+        FindSerializedMetricValue(before_metrics, sum_name).value_or(0);
+
     M().observe_oplog_etcd_write_latency_us(100);
     M().observe_oplog_etcd_write_latency_us(5000);
-    SUCCEED();
+
+    const std::string after_metrics = M().serialize_metrics();
+    const auto count_after =
+        FindSerializedMetricValue(after_metrics, count_name);
+    const auto sum_after = FindSerializedMetricValue(after_metrics, sum_name);
+    ASSERT_TRUE(count_after.has_value());
+    ASSERT_TRUE(sum_after.has_value());
+    EXPECT_EQ(count_before + 2, *count_after);
+    EXPECT_EQ(sum_before + 5100, *sum_after);
 }
 
 TEST_F(HAMetricManagerTest, TestRecordOpLogApplyLatency) {
+    const std::string count_name = "ha_oplog_apply_latency_us_count";
+    const std::string sum_name = "ha_oplog_apply_latency_us_sum";
+    const std::string before_metrics = M().serialize_metrics();
+    const int64_t count_before =
+        FindSerializedMetricValue(before_metrics, count_name).value_or(0);
+    const int64_t sum_before =
+        FindSerializedMetricValue(before_metrics, sum_name).value_or(0);
+
     M().observe_oplog_apply_latency_us(50);
     M().observe_oplog_apply_latency_us(1000);
-    SUCCEED();
+
+    const std::string after_metrics = M().serialize_metrics();
+    const auto count_after =
+        FindSerializedMetricValue(after_metrics, count_name);
+    const auto sum_after = FindSerializedMetricValue(after_metrics, sum_name);
+    ASSERT_TRUE(count_after.has_value());
+    ASSERT_TRUE(sum_after.has_value());
+    EXPECT_EQ(count_before + 2, *count_after);
+    EXPECT_EQ(sum_before + 1050, *sum_after);
 }
+
+#ifdef MOONCAKE_ENABLE_OPLOG_PERF_METRICS
+TEST_F(HAMetricManagerTest, TestBatchRecordMetrics) {
+    const auto batches_before = M().get_batch_record_durable_batches_total();
+    const auto entries_before = M().get_batch_record_durable_entries_total();
+    const auto retries_before = M().get_batch_record_retries_total();
+
+    M().inc_batch_record_durable_batches();
+    M().inc_batch_record_durable_entries(8);
+    M().inc_batch_record_retries();
+    M().set_batch_record_committed_queue_depth(3);
+    M().set_batch_record_callback_queue_depth(2);
+    M().set_batch_record_last_batch_id(9);
+    M().set_batch_record_durable_sequence(72);
+    M().observe_batch_record_batch_entries(8);
+    M().observe_batch_record_batch_bytes(1024);
+    M().observe_batch_record_txn_latency_us(500);
+    M().observe_batch_record_commit_to_durable_us(700);
+    M().observe_batch_record_callback_latency_us(20);
+
+    EXPECT_EQ(batches_before + 1, M().get_batch_record_durable_batches_total());
+    EXPECT_EQ(entries_before + 8, M().get_batch_record_durable_entries_total());
+    EXPECT_EQ(retries_before + 1, M().get_batch_record_retries_total());
+    EXPECT_EQ(3, M().get_batch_record_committed_queue_depth());
+    EXPECT_EQ(2, M().get_batch_record_callback_queue_depth());
+    EXPECT_EQ(9, M().get_batch_record_last_batch_id());
+    EXPECT_EQ(72, M().get_batch_record_durable_sequence());
+
+    const std::string text = M().serialize_metrics();
+    for (const char* name : {
+             "ha_batch_record_durable_batches_total",
+             "ha_batch_record_durable_entries_total",
+             "ha_batch_record_retry_total",
+             "ha_batch_record_committed_queue_depth",
+             "ha_batch_record_callback_queue_depth",
+             "ha_batch_record_last_batch_id",
+             "ha_batch_record_durable_sequence",
+             "ha_batch_record_batch_entries",
+             "ha_batch_record_batch_bytes",
+             "ha_batch_record_txn_latency_us",
+             "ha_batch_record_commit_to_durable_us",
+             "ha_batch_record_callback_latency_us",
+         }) {
+        EXPECT_NE(std::string::npos, text.find(name)) << name;
+    }
+}
+#else
+TEST_F(HAMetricManagerTest, BatchRecordMetricsAreAbsentWhenDisabled) {
+    EXPECT_EQ(std::string::npos,
+              M().serialize_metrics().find("ha_batch_record_"));
+}
+#endif
 
 // ========== 7.1.2 Metric serialization tests ==========
 

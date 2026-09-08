@@ -11,6 +11,7 @@
 #include "master_service.h"
 #include "segment.h"
 #include "task_manager.h"
+#include "tenant_id.h"
 #include "utils/zstd_util.h"
 
 namespace mooncake::ha {
@@ -32,9 +33,9 @@ class MasterSnapshotCodecTest : public ::testing::Test {
     // funneled through this helper (friendship is not inherited by the
     // TEST_F-generated subclasses).
     static MasterSnapshotStateView MakeStateView(MasterService& service) {
-        return MasterSnapshotStateView(service, service.segment_manager_,
-                                       service.nof_segment_manager_,
-                                       service.task_manager_);
+        return MasterSnapshotStateView(
+            service, service.segment_manager_, service.local_ssd_manager_,
+            service.nof_segment_manager_, service.task_manager_);
     }
 
     std::unique_ptr<MasterService> master_service_;
@@ -79,7 +80,7 @@ TEST_F(MasterSnapshotCodecTest, EncodeDecodeRoundTripWithMemoryReplica) {
     constexpr size_t kSegmentBase = 0x300000000;
     constexpr size_t kSegmentSize = 1024 * 1024 * 16;  // 16MB
     const std::string kKey = "memory_replica_key";
-    const std::string kTenant = "default";
+    const TenantId& kTenant = TenantId::Default();
 
     Segment segment;
     segment.id = generate_uuid();

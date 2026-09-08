@@ -12,6 +12,11 @@ from aiohttp import web
 from mooncake.store import MooncakeDistributedStore
 from mooncake.mooncake_config import MooncakeConfig
 
+# Caps a caller's /api/unmount_local_disk grace period so a malformed value
+# (e.g. milliseconds passed where seconds are expected) blocks a preStop hook
+# for minutes rather than hours.
+_MAX_UNMOUNT_LOCAL_DISK_GRACE_PERIOD_SECONDS = 3600
+
 
 def _timed_handler(operation_name, handler):
     async def wrapper(request):
@@ -251,6 +256,12 @@ class MooncakeStoreService:
                 web.post(
                     "/api/unmount", _timed_handler("UNMOUNT", self.handle_unmount)
                 ),
+                web.post(
+                    "/api/unmount_local_disk",
+                    _timed_handler(
+                        "UNMOUNT_LOCAL_DISK", self.handle_unmount_local_disk
+                    ),
+                ),
                 web.put("/api/put", _timed_handler("PUT", self.handle_put)),
                 web.get("/api/get/{key}", _timed_handler("GET", self.handle_get)),
                 web.get("/api/exist/{key}", _timed_handler("EXIST", self.handle_exist)),
@@ -293,28 +304,50 @@ class MooncakeStoreService:
                     )
 
                 async with self._state_lock:
-                    # If already in decode mode with mounted segments, unmount them first
-                    if self.mounted_segment_ids:
-                        logging.info(
-                            "Reconfigure decode: unmounting previous segments before remount"
-                        )
-                        ret = self.store.unmount_segment(self.mounted_segment_ids)
-                        if ret != 0:
-                            return web.Response(
-                                status=500,
-                                text=json.dumps(
-                                    {
-                                        "error": f"Unmount of previous segments failed, ret={ret}"
-                                    }
-                                ),
-                                content_type="application/json",
-                            )
-                        self.mounted_segment_ids.clear()
-
+                    # Make-before-break remount: capture the currently serving
+                    # segments so a failed remount can keep them alive instead of
+                    # dropping all capacity.
+                    previous_segment_ids = list(self.mounted_segment_ids)
+                    # /api/reconfigure binds through store.mount_segment ->
+                    # MooncakeDistributedStore.mount_segment -> RealClient::mountSegment
+                    # -> Client::MountSegmentAndGetId -> MasterClient::MountSegment,
+                    # the standard allocator path: each mount mints a fresh UUID
+                    # and the duplicate check is UUID-keyed. That path never calls
+                    # MountNoFSegment or enters ScopedNoFSegmentAccess, so the NoF
+                    # te_endpoint dedup restriction does not apply here even in a
+                    # USE_NOF build. A same-path make-before-break therefore cannot
+                    # collide, and the old and new segments can coexist; keeping
+                    # the old segments live across a failed replacement mount
+                    # preserves decode capacity (the bug this PR fixes). Mount the
+                    # new segment first, and only retire the previous segments
+                    # per-id once the new mount succeeds.
                     result = self.store.mount_segment(
                         path, size, offset, protocol, location
                     )
                     if result["ret"] != 0:
+                        if previous_segment_ids:
+                            # New mount failed but the previous segments are still
+                            # healthy; keep serving from them instead of demoting.
+                            logging.warning(
+                                "Reconfigure decode: mount of %s failed (ret=%s); "
+                                "keeping previous decode segments",
+                                path,
+                                result["ret"],
+                            )
+                            return web.Response(
+                                status=500,
+                                text=json.dumps(
+                                    {
+                                        "error": (
+                                            f"Mount failed, ret={result['ret']}; "
+                                            "keeping previous decode segments"
+                                        ),
+                                        "mode": self.current_mode,
+                                    }
+                                ),
+                                content_type="application/json",
+                            )
+                        # Nothing healthy to fall back to; roll back to prefill.
                         self.current_mode = "prefill"
                         self.mounted_segment_ids.clear()
                         self.last_mount_info.clear()
@@ -332,7 +365,32 @@ class MooncakeStoreService:
                             content_type="application/json",
                         )
 
-                    self.mounted_segment_ids = list(result["segment_ids"])
+                    # New mount succeeded; retire any previously serving segments.
+                    # unmount_segment returns the first error for the whole batch,
+                    # so a single call can't tell which ids were actually freed.
+                    # Unmount one id at a time (as handle_unmount_shm does) and keep
+                    # only the ids whose cleanup genuinely failed: this neither leaks
+                    # them (dropping all ids on failure) nor retains stale ids for
+                    # segments that were already removed (keeping all ids on failure).
+                    failed_unmount_ids = []
+                    for sid in previous_segment_ids:
+                        ret = self.store.unmount_segment([sid])
+                        if ret != 0:
+                            failed_unmount_ids.append(sid)
+                    if failed_unmount_ids:
+                        # The new segment is already live; a failed cleanup only
+                        # leaves the old ids around. Keep them tracked so a later
+                        # unmount (or a switch back to prefill) can retry them.
+                        logging.warning(
+                            "Reconfigure decode: new mount succeeded but unmount of "
+                            "previous segments %s failed; keeping them tracked for "
+                            "future cleanup",
+                            failed_unmount_ids,
+                        )
+
+                    self.mounted_segment_ids = (
+                        list(result["segment_ids"]) + failed_unmount_ids
+                    )
                     self.current_mode = "decode"
                     self.last_mount_info = {
                         "path": path,
@@ -561,6 +619,74 @@ class MooncakeStoreService:
             )
         except Exception as e:
             logging.error("UNMOUNT error: %s", e)
+            return web.Response(
+                status=500,
+                text=json.dumps({"error": str(e)}),
+                content_type="application/json",
+            )
+
+    async def handle_unmount_local_disk(self, request):
+        """Deregister this store's SSD offload tier before the process goes away.
+
+        Meant for a preStop hook. The master stops naming this store as the
+        owner of its offloaded keys, so a reader gets a clean miss instead of a
+        peer that is about to disappear; the call then holds for
+        grace_period_seconds so offload reads already in flight finish here.
+        Runs off the event loop because that wait is seconds long.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(
+                status=400,
+                text=json.dumps({"error": "Malformed JSON body"}),
+                content_type="application/json",
+            )
+        if not isinstance(data, dict):
+            return web.Response(
+                status=400,
+                text=json.dumps({"error": "Request body must be a JSON object"}),
+                content_type="application/json",
+            )
+
+        grace_period_seconds = data.get("grace_period_seconds", 0)
+        if (
+            type(grace_period_seconds) is not int
+            or grace_period_seconds < 0
+            or grace_period_seconds > _MAX_UNMOUNT_LOCAL_DISK_GRACE_PERIOD_SECONDS
+        ):
+            return web.Response(
+                status=400,
+                text=json.dumps(
+                    {
+                        "error": (
+                            "Invalid grace_period_seconds, must be a non-negative "
+                            "integer no greater than "
+                            f"{_MAX_UNMOUNT_LOCAL_DISK_GRACE_PERIOD_SECONDS}"
+                        )
+                    }
+                ),
+                content_type="application/json",
+            )
+
+        try:
+            ret = await asyncio.to_thread(
+                self.store.unmount_local_disk_segment, grace_period_seconds
+            )
+            if ret != 0:
+                return web.Response(
+                    status=500,
+                    text=json.dumps({"error": f"Unmount local disk failed, ret={ret}"}),
+                    content_type="application/json",
+                )
+
+            return web.Response(
+                status=200,
+                text=json.dumps({"status": "success"}),
+                content_type="application/json",
+            )
+        except Exception as e:
+            logging.error("UNMOUNT_LOCAL_DISK error: %s", e)
             return web.Response(
                 status=500,
                 text=json.dumps({"error": str(e)}),
